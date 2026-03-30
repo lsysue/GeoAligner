@@ -1,0 +1,78 @@
+# config.yaml
+
+experiment_name: "geo_aligner_mp16_swin"
+output_dir: "./checkpoints/"
+device: "cuda"
+
+data:
+  # 训练参数
+  batch_size:  256     # 如果显存不够 (如 <16GB)，改为 16 或 8
+  num_workers: 16      # 数据加载线程数
+  img_size: 224       # Swin Transformer 标准输入
+
+  train:
+    csv_file: "/data/lsy/datas/MP16-Pro/metadata/MP16_Pro_filtered.csv"
+    img_dir: "/data/lsy/datas/MP16-Pro/images"
+
+  val:
+    csv_file: "/data/lsy/datas/yfcc26k/metadata/yfcc25600_places365.csv"
+    img_dir: "/data/lsy/datas/yfcc26k/images"
+  
+  test:
+    csv_file: "/data/lsy/datas/yfcc4k/metadata/yfcc4k_places365.csv"
+    img_dir: "/data/lsy/datas/yfcc4k/images"
+    # csv_file: "/data/lsy/datas/im2gps3k/metadata/im2gps3k_places365.csv"
+    # img_dir: "/data/lsy/datas/im2gps3k/images"
+  
+model:
+  image:
+    vit_name: "swin_base_patch4_window7_224"
+    s_dim: 768
+    g_dim: 256
+    n_g_tokens: 64
+    use_landmark: false 
+
+  gps:
+    s2_levels: [3, 6, 9, 11, 13] 
+    s2_embed_dim: 128
+    s2_num_buckets: 131072
+    s2_embed_dropout: 0.10
+    s2_feature_dropout: 0.10
+    transformer_nhead: 4
+    transformer_nlayers: 2
+    transformer_dropout: 0.10
+    fourier_n_freqs: 16
+    continuous_geo_mode: "unit_sphere"
+    base_scale_multiplier: 1.0
+    min_scale_deg: 0.0001
+    max_scale_deg: 1.0
+    lon_scale_cos_epsilon: 0.15
+    sampling_mode_train: "random"
+    sampling_mode_eval: "same_as_train"
+    sampling_seed: 42
+    n_g_tokens: 64
+    s_dim: 768
+    g_dim: 256
+
+  alignment:
+    loss_weight_s: 1.0
+    loss_weight_g: 1.2
+    temperature: 0.07
+    semantic_queue_size: 4096
+
+train:
+  epochs: 50
+  learning_rate: 5e-5
+  weight_decay: 0.05
+  lr_scheduler: "cosine"
+  lr_mult_image: 0.1
+  lr_mult_gps: 1.0
+  lr_mult_align: 1.0
+  lr_mult_logit_scale: 0.01
+  use_ema: true
+  ema_decay: 0.999
+  
+  warmup_epochs: 1
+  log_interval: 100
+  save_interval: 1
+  resume_path: null

@@ -1,0 +1,14 @@
+tqdm
+timm
+pandas
+pyyaml
+geopy
+s2sphere
+faiss-gpu
+tensorboard
+matplotlib
+numpy==1.26.3
+torch==2.1.1
+torchvision==0.16.1
+torchaudio==2.1.1
+huggingface-hub
