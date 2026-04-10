@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 # --- 引入项目模块 ---
 from utils.config import load_config
 from datasets.img2geo_dataset import Img2GeoDataset
-from encoders.image_encoder import ImageEncoder, ImageEncoderConfig
+from encoders.image_encoder_clip import ImageEncoder, ImageEncoderConfig
 from encoders.location_encoder import GPSEncoder, GPSEncoderConfig
 from aligners.alignmenthub import AlignmentHub
 
@@ -602,7 +602,8 @@ def main(args):
         s_dim=cfg.model.image.s_dim,
         g_dim=cfg.model.image.g_dim,
         n_g_tokens=cfg.model.image.n_g_tokens,
-        use_landmark=False
+        freeze_backbone=getattr(cfg.model.image, 'freeze_backbone', False),
+        use_landmark=getattr(cfg.model.image, 'use_landmark', False)
     )
     
     gps_cfg = GPSEncoderConfig(
@@ -654,10 +655,12 @@ def main(args):
     align_named_params = list(alignment_hub.module.named_parameters())
     logit_scale_params = [p for n, p in align_named_params if n.endswith('logit_scale')]
     align_core_params = [p for n, p in align_named_params if not n.endswith('logit_scale')]
+    image_trainable_params = [p for p in image_encoder.module.parameters() if p.requires_grad]
+    gps_trainable_params = [p for p in gps_encoder.module.parameters() if p.requires_grad]
 
     optimizer_grouped_parameters = [
-        {"params": image_encoder.module.parameters(), "lr": base_lr * image_lr_mult},
-        {"params": gps_encoder.module.parameters(), "lr": base_lr * gps_lr_mult},
+        {"params": image_trainable_params, "lr": base_lr * image_lr_mult},
+        {"params": gps_trainable_params, "lr": base_lr * gps_lr_mult},
         {"params": align_core_params, "lr": base_lr * align_lr_mult},
     ]
     if logit_scale_params:

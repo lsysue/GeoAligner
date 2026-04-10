@@ -1,6 +1,7 @@
 # encoders/image_encoder.py
 
 from typing import Optional, Dict, Any, Tuple
+import math
 import torch
 import torch.nn as nn
 from torchvision import transforms as T
@@ -8,12 +9,8 @@ from torchvision import transforms as T
 from PIL import Image
 import numpy as np
 
-# 强制依赖 timm，因为 SwinT 在 timm 中支持最好
-try:
-    import timm
-    _HAS_TIMM = True
-except ImportError:
-    raise ImportError("Swin Transformer requires `timm`. Please install it via `pip install timm`.")
+import timm
+from transformers import CLIPVisionModel, AutoImageProcessor
 
 class ImageEncoderConfig:
     """
@@ -38,6 +35,7 @@ class ImageEncoderConfig:
         use_landmark: bool = True,
         add_2d_positional_encoding: bool = True,
         normalize_input: bool = False,
+        freeze_backbone: bool = False,
     ):
         self.vit_name = vit_name
         self.img_size = img_size
@@ -50,6 +48,7 @@ class ImageEncoderConfig:
         self.use_landmark = use_landmark
         self.add_2d_positional_encoding = add_2d_positional_encoding
         self.normalize_input = normalize_input
+        self.freeze_backbone = freeze_backbone
 
 class SimpleLandmarkHead(nn.Module):
     """
@@ -104,8 +103,10 @@ class SimpleLandmarkHead(nn.Module):
 
 class ImageEncoder(nn.Module):
     """
-    ImageEncoder (Swin Transformer Version)
-    - Backbone: Swin Transformer (via timm)
+    ImageEncoder (Unified Version)
+    - Backbones:
+        1) Swin Transformer (via timm)
+        2) CLIP Vision (via transformers)
     - Outputs:
         s_vector: (B, s_dim) - 全局语义
         g_tokens: (B, n_g_tokens, g_dim) - 地理空间 Token
@@ -113,24 +114,40 @@ class ImageEncoder(nn.Module):
     def __init__(self, cfg: ImageEncoderConfig):
         super().__init__()
         self.cfg = cfg
+        self.is_clip_backbone = "clip" in cfg.vit_name.lower()
 
-        # 1. 加载 Swin Transformer Backbone
-        # print(f"Loading backbone: {cfg.vit_name} ...")
-        self.backbone = timm.create_model(cfg.vit_name, pretrained=True, features_only=False)
+        if self.is_clip_backbone:
+            self.backbone = CLIPVisionModel.from_pretrained(cfg.vit_name)
+            self.image_processor = AutoImageProcessor.from_pretrained(cfg.vit_name)
 
-        pretrained_cfg = getattr(self.backbone, "pretrained_cfg", {}) or {}
-        img_mean = pretrained_cfg.get("mean", (0.485, 0.456, 0.406))
-        img_std = pretrained_cfg.get("std", (0.229, 0.224, 0.225))
-        self.register_buffer("img_mean", torch.tensor(img_mean).view(1, 3, 1, 1), persistent=False)
-        self.register_buffer("img_std", torch.tensor(img_std).view(1, 3, 1, 1), persistent=False)
-        
-        # 获取 Swin 输出的特征维度 (通常 Swin Base 是 1024, Tiny 是 768)
-        self.backbone_feature_dim = self.backbone.num_features
-        # print(f"Backbone feature dim: {self.backbone_feature_dim}")
+            image_mean = getattr(self.image_processor, "image_mean", [0.48145466, 0.4578275, 0.40821073])
+            image_std = getattr(self.image_processor, "image_std", [0.26862954, 0.26130258, 0.27577711])
+            self.register_buffer("img_mean", torch.tensor(image_mean).view(1, 3, 1, 1), persistent=False)
+            self.register_buffer("img_std", torch.tensor(image_std).view(1, 3, 1, 1), persistent=False)
+
+            self.backbone_feature_dim = int(self.backbone.config.hidden_size)
+        else:
+            # print(f"Loading backbone: {cfg.vit_name} ...")
+            self.backbone = timm.create_model(cfg.vit_name, pretrained=True, features_only=False)
+
+            pretrained_cfg = getattr(self.backbone, "pretrained_cfg", {}) or {}
+            img_mean = pretrained_cfg.get("mean", (0.485, 0.456, 0.406))
+            img_std = pretrained_cfg.get("std", (0.229, 0.224, 0.225))
+            self.register_buffer("img_mean", torch.tensor(img_mean).view(1, 3, 1, 1), persistent=False)
+            self.register_buffer("img_std", torch.tensor(img_std).view(1, 3, 1, 1), persistent=False)
+
+            # 获取 Swin 输出的特征维度 (通常 Swin Base 是 1024, Tiny 是 768)
+            self.backbone_feature_dim = self.backbone.num_features
+            # print(f"Backbone feature dim: {self.backbone_feature_dim}")
 
         # 2. 映射层 (Mapping Layers)
         # Global Projection: Backbone Features -> S-space
         self.global_proj = nn.Linear(self.backbone_feature_dim, cfg.s_dim)
+
+        # 可选冻结预训练 backbone，仅训练新增 head 与对齐模块
+        if cfg.freeze_backbone:
+            for p in self.backbone.parameters():
+                p.requires_grad = False
 
         # 3. Landmark Head (Optional)
         if cfg.use_landmark:
@@ -165,6 +182,11 @@ class ImageEncoder(nn.Module):
         # LayerNorms
         self.ln_s = nn.LayerNorm(cfg.s_dim)
         self.ln_g = nn.LayerNorm(cfg.g_dim)
+
+    def preprocess_image(self, image):
+        if not self.is_clip_backbone:
+            raise RuntimeError("preprocess_image is only available when using a CLIP backbone")
+        return self.image_processor(images=image, return_tensors="pt")["pixel_values"]
 
     def _build_2d_sincos_pos_embed(
         self,
@@ -212,33 +234,44 @@ class ImageEncoder(nn.Module):
         spatial_hw = None
 
         # --- 1. Backbone Forward ---
-        # timm 的 SwinT forward_features 通常返回 (B, H/32, W/32, C)
-        features = self.backbone.forward_features(images) 
+        if self.is_clip_backbone:
+            # CLIP last_hidden_state: (B, 1 + N_patch, C)
+            vision_out = self.backbone(pixel_values=images, return_dict=True)
+            tokens = vision_out.last_hidden_state
 
-        # 如果是 (B, h, w, C) 且 C 是特征维度，则转换为 (B, C, h, w)
-        if features.dim() == 4 and features.shape[-1] == self.backbone_feature_dim:
-            features = features.permute(0, 3, 1, 2)  # (B, h, w, C) -> (B, C, h, w)
+            if vision_out.pooler_output is not None:
+                global_vec = vision_out.pooler_output
+            else:
+                global_vec = tokens[:, 0, :]
 
-        # 处理 Swin 的输出形状，确保统一为 (B, N, C) 和 (B, C)
-        if features.dim() == 4: 
-            # Case: (B, C, h, w) -> 经过上面 permute 后的标准格式
-            
-            # 1. Global Vector: Global Average Pooling (在 h, w 维度平均)
-            # 现在 dim=[-2, -1] 确实对应 h 和 w
-            global_vec = features.mean(dim=[-2, -1]) # (B, C)
-            
-            # 2. Patch Tokens: Flatten spatial dims
-            # (B, C, h, w) -> (B, C, h*w) -> (B, h*w, C)
-            patch_tokens = features.flatten(2).transpose(1, 2)
-            spatial_hw = (features.shape[-2], features.shape[-1])
-            
-        elif features.dim() == 3:
-            # Case: (B, L, C) -> 某些 Transformer 输出已经是 Sequence
-            # 1. Global Vector: Mean over tokens
-            global_vec = features.mean(dim=1) # (B, C)
-            patch_tokens = features
+            patch_tokens = tokens[:, 1:, :]
+            n_patch = patch_tokens.shape[1]
+            side = int(math.sqrt(n_patch))
+            if side * side == n_patch:
+                spatial_hw = (side, side)
         else:
-            raise ValueError(f"Unexpected output shape from backbone: {features.shape}")
+            # timm 的 SwinT forward_features 通常返回 (B, H/32, W/32, C)
+            features = self.backbone.forward_features(images)
+
+            # 如果是 (B, h, w, C) 且 C 是特征维度，则转换为 (B, C, h, w)
+            if features.dim() == 4 and features.shape[-1] == self.backbone_feature_dim:
+                features = features.permute(0, 3, 1, 2)  # (B, h, w, C) -> (B, C, h, w)
+
+            # 处理 Swin 的输出形状，确保统一为 (B, N, C) 和 (B, C)
+            if features.dim() == 4:
+                # 1. Global Vector: Global Average Pooling
+                global_vec = features.mean(dim=[-2, -1])  # (B, C)
+
+                # 2. Patch Tokens: Flatten spatial dims
+                patch_tokens = features.flatten(2).transpose(1, 2)
+                spatial_hw = (features.shape[-2], features.shape[-1])
+
+            elif features.dim() == 3:
+                # Case: (B, L, C)
+                global_vec = features.mean(dim=1)  # (B, C)
+                patch_tokens = features
+            else:
+                raise ValueError(f"Unexpected output shape from backbone: {features.shape}")
 
         # --- 2. S-Space Mapping ---
         s_vec = self.global_proj(global_vec)

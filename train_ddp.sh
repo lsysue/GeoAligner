@@ -6,13 +6,12 @@ VENV_PATH="/home/normaluser/lsy/envs/im2geo"
 
 # 1. 物理屏蔽
 export CUDA_VISIBLE_DEVICES=1
-LOG_FILE="nohup_train_$(date +%Y%m%d_%H%M%S).out"
 
 # 2. 启动训练
-echo "Starting training on isolated GPU: 0..."
+echo "Starting training on GPU: $CUDA_VISIBLE_DEVICES..."
 
-# 使用虚拟环境下的 torchrun 绝对路径，并确保它调用环境内的 python
-nohup $VENV_PATH/bin/torchrun --nproc_per_node=1 --master_port=29505 train_ddp.py --config configs/config.yaml > $LOG_FILE 2>&1 &
+# 直接运行，不使用 nohup，不进行日志重定向
+$VENV_PATH/bin/torchrun --nproc_per_node=1 --master_port=29505 train_ddp.py --config configs/config.yaml
 
-echo "Training started! PID: $!"
-echo "Monitor logs with: tail -f $LOG_FILE"
+# 脚本会在这里阻塞，直到训练结束
+echo "Training finished!"
