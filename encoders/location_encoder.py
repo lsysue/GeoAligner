@@ -29,7 +29,7 @@ class GPSEncoderConfig:
     def __init__(
         self,
         # S2 相关配置
-        s2_levels: List[int] = [3, 6, 9, 11],
+        s2_levels: List[int] = [3, 6, 9, 11, 13] ,
         s2_embed_dim: int = 128,
         s2_num_buckets: int = 2**17,
         s2_embed_dropout: float = 0.1,
@@ -61,20 +61,12 @@ class GPSEncoderConfig:
         self.s2_num_buckets = s2_num_buckets
         self.s2_embed_dropout = s2_embed_dropout
         self.s2_feature_dropout = s2_feature_dropout
-        self.num_s2_levels = len(s2_levels)
         self.transformer_nhead = transformer_nhead
         self.transformer_nlayers = transformer_nlayers
         self.transformer_dropout = transformer_dropout
 
         self.fourier_n_freqs = fourier_n_freqs
         self.continuous_geo_mode = continuous_geo_mode
-        if self.continuous_geo_mode not in {"latlon_linear", "unit_sphere"}:
-            raise ValueError(
-                f"Unsupported continuous_geo_mode: {self.continuous_geo_mode}. "
-                f"Expected one of ['latlon_linear', 'unit_sphere']"
-            )
-        self.continuous_input_dim = 3 if self.continuous_geo_mode == "unit_sphere" else 2
-        self.fourier_dim = self.continuous_input_dim * 2 * self.fourier_n_freqs
         self.n_g_tokens = n_g_tokens
         # self.g_token_neighborhood_scale = g_token_neighborhood_scale
         self.base_scale_multiplier = base_scale_multiplier
@@ -87,6 +79,17 @@ class GPSEncoderConfig:
         
         self.g_dim = g_dim
         self.s_dim = s_dim
+
+    def refresh_derived_fields(self):
+        self.s2_levels = sorted(self.s2_levels)
+        self.num_s2_levels = len(self.s2_levels)
+        if self.continuous_geo_mode not in {"latlon_linear", "unit_sphere"}:
+            raise ValueError(
+                f"Unsupported continuous_geo_mode: {self.continuous_geo_mode}. "
+                f"Expected one of ['latlon_linear', 'unit_sphere']"
+            )
+        self.continuous_input_dim = 3 if self.continuous_geo_mode == "unit_sphere" else 2
+        self.fourier_dim = self.continuous_input_dim * 2 * self.fourier_n_freqs
         
 class GPSEncoder(nn.Module):
     """
@@ -108,6 +111,11 @@ class GPSEncoder(nn.Module):
             raise ValueError(
                 f"lon_scale_cos_epsilon must be in (0, 1], got {self.cfg.lon_scale_cos_epsilon}"
             )
+
+        # Recompute derived fields once here to guard against externally mutated cfg values.
+        self.cfg.refresh_derived_fields()
+        if self.cfg.num_s2_levels <= 0:
+            raise ValueError("s2_levels must contain at least one level")
 
         # --- Part 1: S2 离散编码（宏观上下文） ---
         self.s2_shared_embedding = nn.Embedding(

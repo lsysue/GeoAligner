@@ -1,17 +1,30 @@
-#!/bin/bash
-# train.sh
+#!/usr/bin/env bash
+set -euo pipefail
 
-# 定义虚拟环境路径，方便维护
-VENV_PATH="/home/normaluser/lsy/envs/im2geo"
+# Usage:
+#   bash train_ddp.sh [config_path] [extra train_ddp.py args...]
+# Examples:
+#   bash train_ddp.sh
+#   bash train_ddp.sh configs/config_smallset_im2gps3k.yaml
+#   CUDA_VISIBLE_DEVICES=0 bash train_ddp.sh configs/config_debug.yaml
 
-# 1. 物理屏蔽
-export CUDA_VISIBLE_DEVICES=1
+VENV_PATH="${VENV_PATH:-/home/normaluser/lsy/envs/im2geo}"
+CONFIG_PATH="${1:-configs/config.yaml}"
+MASTER_PORT="${MASTER_PORT:-29505}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1}"
+EXTRA_ARGS=("${@:2}")
 
-# 2. 启动训练
-echo "Starting training on GPU: $CUDA_VISIBLE_DEVICES..."
+export CUDA_VISIBLE_DEVICES
 
-# 直接运行，不使用 nohup，不进行日志重定向
-$VENV_PATH/bin/torchrun --nproc_per_node=1 --master_port=29505 train_ddp.py --config configs/config.yaml
+echo "Starting training on GPU(s): ${CUDA_VISIBLE_DEVICES}"
+echo "Config: ${CONFIG_PATH}"
+echo "Master port: ${MASTER_PORT}"
 
-# 脚本会在这里阻塞，直到训练结束
-echo "Training finished!"
+"${VENV_PATH}/bin/torchrun" \
+	--nproc_per_node=1 \
+	--master_port="${MASTER_PORT}" \
+	train_ddp.py \
+	--config "${CONFIG_PATH}" \
+	"${EXTRA_ARGS[@]}"
+
+echo "Training finished"

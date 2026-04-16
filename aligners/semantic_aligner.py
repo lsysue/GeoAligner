@@ -112,3 +112,10 @@ class SemanticAligner(nn.Module):
             self._dequeue_and_enqueue(global_image_s_vec, global_gps_s_vec)
         
         return (loss_img2gps + loss_gps2img) / 2
+
+    @staticmethod
+    def compute_pair_similarity(image_s_vec: torch.Tensor, gps_s_vec: torch.Tensor) -> torch.Tensor:
+        """Compute pairwise semantic similarity matrix between image and GPS vectors."""
+        image_s_vec = F.normalize(image_s_vec, p=2, dim=-1)
+        gps_s_vec = F.normalize(gps_s_vec, p=2, dim=-1)
+        return image_s_vec @ gps_s_vec.T
