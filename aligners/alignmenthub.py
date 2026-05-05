@@ -1,4 +1,5 @@
 # alignment_hub.py
+from dataclasses import dataclass
 from typing import Dict, Optional
 import math
 import torch
@@ -8,56 +9,32 @@ from .semantic_aligner import SemanticAligner
 from .geographic_aligner import GeoAligner
 
 
+@dataclass
 class AlignmentHubConfig:
     """AlignmentHub configuration with defaults, similar to encoder config classes."""
+    s_dim: int = 768
+    g_dim: int = 256
+    loss_weight_s: float = 1.0
+    loss_weight_g: float = 1.0
+    temperature: float = 0.07
+    semantic_queue_size: int = 4096
+    geo_scorer: str = "late"
+    hybrid_lambda: float = 0.2
+    sinkhorn_eps: float = 0.05
+    sinkhorn_iters: int = 3
+    ot_mass_mode: str = "uniform"
+    ot_unbalanced_tau: float = 1.0
+    ot_partial_mass: float = 1.0
+    sg_fusion_mode: str = "mean"
+    sg_fusion_weight: float = 0.5
+    sg_dynamic_temperature: float = 0.07
+    sg_dynamic_consistency_topk: int = 10
+    sg_dynamic_weight_gap: float = 0.45
+    sg_dynamic_weight_entropy: float = 0.35
+    sg_dynamic_weight_consistency: float = 0.20
+    sg_dynamic_alpha_min: float = 0.05
+    sg_dynamic_alpha_max: float = 0.95
 
-    def __init__(
-        self,
-        s_dim: int = 768,
-        g_dim: int = 256,
-        loss_weight_s: float = 1.0,
-        loss_weight_g: float = 1.0,
-        temperature: float = 0.07,
-        semantic_queue_size: int = 4096,
-        geo_scorer: str = "late",
-        hybrid_lambda: float = 0.2,
-        sinkhorn_eps: float = 0.05,
-        sinkhorn_iters: int = 3,
-        ot_mass_mode: str = "uniform",
-        ot_unbalanced_tau: float = 1.0,
-        ot_partial_mass: float = 1.0,
-        sg_fusion_mode: str = "mean",
-        sg_fusion_weight: float = 0.5,
-        sg_dynamic_temperature: float = 0.07,
-        sg_dynamic_consistency_topk: int = 10,
-        sg_dynamic_weight_gap: float = 0.45,
-        sg_dynamic_weight_entropy: float = 0.35,
-        sg_dynamic_weight_consistency: float = 0.20,
-        sg_dynamic_alpha_min: float = 0.05,
-        sg_dynamic_alpha_max: float = 0.95,
-    ):
-        self.s_dim = s_dim
-        self.g_dim = g_dim
-        self.loss_weight_s = loss_weight_s
-        self.loss_weight_g = loss_weight_g
-        self.temperature = temperature
-        self.semantic_queue_size = semantic_queue_size
-        self.geo_scorer = geo_scorer
-        self.hybrid_lambda = hybrid_lambda
-        self.sinkhorn_eps = sinkhorn_eps
-        self.sinkhorn_iters = sinkhorn_iters
-        self.ot_mass_mode = ot_mass_mode
-        self.ot_unbalanced_tau = ot_unbalanced_tau
-        self.ot_partial_mass = ot_partial_mass
-        self.sg_fusion_mode = sg_fusion_mode
-        self.sg_fusion_weight = sg_fusion_weight
-        self.sg_dynamic_temperature = sg_dynamic_temperature
-        self.sg_dynamic_consistency_topk = sg_dynamic_consistency_topk
-        self.sg_dynamic_weight_gap = sg_dynamic_weight_gap
-        self.sg_dynamic_weight_entropy = sg_dynamic_weight_entropy
-        self.sg_dynamic_weight_consistency = sg_dynamic_weight_consistency
-        self.sg_dynamic_alpha_min = sg_dynamic_alpha_min
-        self.sg_dynamic_alpha_max = sg_dynamic_alpha_max
 
 def min_max_norm(scores: torch.Tensor) -> torch.Tensor:
     if scores.dim() != 2:

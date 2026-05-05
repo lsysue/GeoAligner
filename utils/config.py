@@ -1,7 +1,6 @@
 import argparse
 import yaml
 
-
 class Config:
     """Nested config object with dot-access and YAML-friendly helpers.
 
@@ -51,6 +50,8 @@ class Config:
             return {k: Config._to_plain(v) for k, v in obj.items()}
         if isinstance(obj, (list, tuple)):
             return [Config._to_plain(v) for v in obj]
+        if hasattr(obj, "__dict__") and not isinstance(obj, type):
+            return {k: Config._to_plain(v) for k, v in obj.__dict__.items()}
         return obj
 
     def to_dict(self):
@@ -72,7 +73,7 @@ class Config:
             if child is None:
                 child = cls()
                 setattr(node, key, child)
-            elif not isinstance(child, cls):
+            elif not isinstance(child, cls) and not hasattr(child, "__dict__"):
                 raise ValueError(
                     f"Cannot assign nested key '{dotted_key}': '{key}' is not a mapping node"
                 )
@@ -123,8 +124,57 @@ class Config:
             setattr(target, key, value)
         return target
 
-    def apply_overrides(self, overrides, *, allow_keys=None):
-        return self.merge_overrides(self, overrides, allow_keys=allow_keys)
+def get_module_config_classes():
+    # 在函数内部导入，此时程序已经运行，主模块已部分加载，避开文件头部的死锁
+    from encoders.image_encoder import ImageEncoderConfig
+    from encoders.location_encoder import GPSEncoderConfig
+    from aligners.alignmenthub import AlignmentHubConfig
+    from reasoners.indexer import IndexerConfig
+    from reasoners.retriever import RetrieverConfig
+    
+    return {
+        "model.image": ImageEncoderConfig,
+        "model.gps": GPSEncoderConfig,
+        "model.alignment": AlignmentHubConfig,
+        "retrieval": RetrieverConfig,
+        "retrieval.indexer": IndexerConfig,
+    }
+
+def _ensure_nested_node(node, key):
+    if isinstance(node, Config):
+        child = getattr(node, key, None)
+        if child is None:
+            child = Config()
+            setattr(node, key, child)
+        return child
+
+    if hasattr(node, "__dict__"):
+        child = getattr(node, key, None)
+        if child is None:
+            child = Config()
+            setattr(node, key, child)
+        return child
+
+    raise TypeError(
+        f"Cannot create nested config path through object of type {type(node)}"
+    )
+
+
+def _instantiate_default_section(cfg, section_path: str, config_cls):
+    parent = cfg
+    parts = section_path.split('.')
+    for part in parts[:-1]:
+        parent = _ensure_nested_node(parent, part)
+
+    section_name = parts[-1]
+    raw_section = getattr(parent, section_name, None)
+    config_obj = build_from_defaults(config_cls, raw_section)
+    setattr(parent, section_name, config_obj)
+
+
+def _instantiate_known_sections(cfg):
+    for section_path, config_cls in get_module_config_classes().items():
+        _instantiate_default_section(cfg, section_path, config_cls)
 
 
 def save_config(config_obj, save_path: str):
@@ -153,12 +203,21 @@ def build_from_defaults(config_cls, section_cfg=None):
 
 
 def load_config(config_path: str = "config.yaml", overrides=None):
-    """Load YAML config and optionally apply dotted KEY=VALUE overrides."""
-    return Config.from_yaml(config_path, overrides=overrides)
+    """Load YAML config, instantiate known module defaults, and optionally apply dotted KEY=VALUE overrides."""
+    try:
+        with open(config_path, "r") as file:
+            cfg_dict = yaml.safe_load(file) or {}
+        cfg = Config.from_dict(cfg_dict)
+        _instantiate_known_sections(cfg)
+        return Config.merge_overrides(cfg, overrides)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Config file not found: {config_path}") from exc
+    except Exception as exc:
+        raise Exception(f"Failed to load config: {exc}") from exc
 
 
 def arg_parser():
-    parser = argparse.ArgumentParser("GeoAligner DDP Training")
+    parser = argparse.ArgumentParser("GeoAligner CLI")
     parser.add_argument(
         "--config",
         type=str,
@@ -168,7 +227,34 @@ def arg_parser():
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable debug mode in training script",
+        help="Enable debug mode (script-specific behavior)",
+    )
+    parser.add_argument(
+        "--run_dir",
+        type=str,
+        default=None,
+        help=(
+            "Subdirectory under fixed roots for checkpoint/index resolution. "
+            "Used by eval when explicit paths are not provided."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="checkpoint_best.pth",
+        help="Checkpoint filename used with --run_dir.",
+    )
+    parser.add_argument(
+        "--checkpoint_path",
+        type=str,
+        default=None,
+        help="Absolute or relative checkpoint path. Overrides --run_dir + --checkpoint.",
+    )
+    parser.add_argument(
+        "--index_dir",
+        type=str,
+        default=None,
+        help="Absolute or relative index directory. Overrides --run_dir for index path.",
     )
     parser.add_argument(
         "--set",

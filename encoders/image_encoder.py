@@ -1,17 +1,17 @@
-# encoders/image_encoder.py
-
-from typing import Optional, Dict, Any, Tuple
+# image_encoder.py
 import math
+from dataclasses import dataclass
+from typing import Dict, Any
+from PIL import Image
+
 import torch
 import torch.nn as nn
 from torchvision import transforms as T
 
-from PIL import Image
-import numpy as np
-
 import timm
 from transformers import CLIPVisionModel, AutoImageProcessor
 
+@dataclass
 class ImageEncoderConfig:
     """
     配置项
@@ -21,34 +21,18 @@ class ImageEncoderConfig:
     - g_dim: G-space 维度 (地理 Token)
     - n_g_tokens: 输出的地理 Token 数量 (通过 Attention 聚合得到)
     """
-    def __init__(
-        self,
-        # 改为 Swin 的默认模型名称
-        vit_name: str = "swin_base_patch4_window7_224", 
-        img_size: int = 224,
-        s_dim: int = 768,
-        g_dim: int = 256,
-        n_g_tokens: int = 64,
-        g_agg_nhead: int = 8,
-        g_dropout: float = 0.1,
-        g_ffn_mult: int = 4,
-        use_landmark: bool = True,
-        add_2d_positional_encoding: bool = True,
-        normalize_input: bool = False,
-        freeze_backbone: bool = False,
-    ):
-        self.vit_name = vit_name
-        self.img_size = img_size
-        self.s_dim = s_dim
-        self.g_dim = g_dim
-        self.n_g_tokens = n_g_tokens
-        self.g_agg_nhead = g_agg_nhead
-        self.g_dropout = g_dropout
-        self.g_ffn_mult = g_ffn_mult
-        self.use_landmark = use_landmark
-        self.add_2d_positional_encoding = add_2d_positional_encoding
-        self.normalize_input = normalize_input
-        self.freeze_backbone = freeze_backbone
+    vit_name: str = "swin_base_patch4_window7_224"
+    img_size: int = 224
+    s_dim: int = 768
+    g_dim: int = 256
+    n_g_tokens: int = 64
+    g_agg_nhead: int = 8
+    g_dropout: float = 0.1
+    g_ffn_mult: int = 4
+    use_landmark: bool = True
+    add_2d_positional_encoding: bool = True
+    normalize_input: bool = False
+    freeze_backbone: bool = False
 
 class SimpleLandmarkHead(nn.Module):
     """

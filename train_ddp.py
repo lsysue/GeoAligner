@@ -9,9 +9,9 @@ from torch.optim.lr_scheduler import LambdaLR
 from torchvision import transforms
 from tqdm import tqdm
 
-from utils.config import Config, arg_parser, build_from_defaults, load_config
+from utils.config import Config, arg_parser, config_to_dict, load_config
 from utils.ddp import DDP
-from utils.metrics import Retriever
+from utils.metrics import RecallMetricsTracker, METRIC_TOP_KS, METRIC_THRESHOLDS_KM
 from utils.reporter import (
     setup_reporter,
     log_train_step_diagnostics,
@@ -22,14 +22,11 @@ from utils.reporter import (
 from utils.ema import ModelEMA
 from analysis.analysis import pos_neg_stats
 from datasets.img2geo_dataset import Img2GeoDataset
-from encoders.image_encoder import ImageEncoder, ImageEncoderConfig
-from encoders.location_encoder import GPSEncoder, GPSEncoderConfig
-from aligners.alignmenthub import AlignmentHub, AlignmentHubConfig
+from encoders.image_encoder import ImageEncoder
+from encoders.location_encoder import GPSEncoder
+from aligners.alignmenthub import AlignmentHub
 
 torch.multiprocessing.set_sharing_strategy('file_system')
-
-EVAL_KS = (1, 5, 10)
-EVAL_THRESHOLDS_KM = (1, 25, 200, 750, 2500)
 
 def train_per_epoch(image_encoder, gps_encoder, alignment_hub, dataloader, optimizer, scheduler, scaler, device, writer, global_step, epoch, is_master, world_size, cfg, ema_dict=None):
     sampler = dataloader.sampler
@@ -51,8 +48,8 @@ def train_per_epoch(image_encoder, gps_encoder, alignment_hub, dataloader, optim
     }
     diag_count = 0
 
-    train_s_recall_state = Retriever.init_recall_state(EVAL_KS, EVAL_THRESHOLDS_KM)
-    train_g_recall_state = Retriever.init_recall_state(EVAL_KS, EVAL_THRESHOLDS_KM)
+    train_s_recall_state = RecallMetricsTracker.init_recall_state(METRIC_TOP_KS, METRIC_THRESHOLDS_KM)
+    train_g_recall_state = RecallMetricsTracker.init_recall_state(METRIC_TOP_KS, METRIC_THRESHOLDS_KM)
 
     align_module = alignment_hub.module if hasattr(alignment_hub, "module") else alignment_hub
     
@@ -62,7 +59,7 @@ def train_per_epoch(image_encoder, gps_encoder, alignment_hub, dataloader, optim
     else:
         pbar = dataloader
 
-    for batch_idx, (images, gps_coords, s2_tokens) in enumerate(pbar):
+    for batch_idx, (_, images, gps_coords, s2_tokens) in enumerate(pbar):
         images = images.to(device, non_blocking=True)
         gps_coords = gps_coords.to(device, non_blocking=True)
         s2_tokens = s2_tokens.to(device, non_blocking=True)
@@ -100,12 +97,12 @@ def train_per_epoch(image_encoder, gps_encoder, alignment_hub, dataloader, optim
             image_s_vectors.detach(),
             gps_s_vectors.detach(),
         )
-        Retriever.update_recall_state(train_s_recall_state, s_sim, gps_coords)
+        RecallMetricsTracker.update_recall_state(train_s_recall_state, s_sim, gps_coords)
         g_sim = align_module.geo_aligner.compute_pair_similarity(
             image_g_tokens.detach(),
             gps_g_tokens.detach(),
         )
-        Retriever.update_recall_state(train_g_recall_state, g_sim, gps_coords)
+        RecallMetricsTracker.update_recall_state(train_g_recall_state, g_sim, gps_coords)
 
         if is_master:
             if batch_idx % cfg.train.log_interval == 0:
@@ -152,8 +149,8 @@ def train_per_epoch(image_encoder, gps_encoder, alignment_hub, dataloader, optim
     else:
         diag_avg = {k: float('nan') for k in diag_sums.keys()}
 
-    train_s_metrics = Retriever.finalize_recall_state(train_s_recall_state, device)
-    train_g_metrics = Retriever.finalize_recall_state(train_g_recall_state, device)
+    train_s_metrics = RecallMetricsTracker.finalize_recall_state(train_s_recall_state, device)
+    train_g_metrics = RecallMetricsTracker.finalize_recall_state(train_g_recall_state, device)
 
     return avg_loss, avg_s_loss, avg_g_loss, global_step, diag_avg, train_s_metrics, train_g_metrics
 
@@ -169,12 +166,12 @@ def val_per_epoch(image_encoder, gps_encoder, alignment_hub, val_dataloader, dev
     val_s_loss = torch.zeros(1, device=device)
     val_g_loss = torch.zeros(1, device=device)
 
-    val_s_recall_state = Retriever.init_recall_state(EVAL_KS, EVAL_THRESHOLDS_KM)
-    val_g_recall_state = Retriever.init_recall_state(EVAL_KS, EVAL_THRESHOLDS_KM)
+    val_s_recall_state = RecallMetricsTracker.init_recall_state(METRIC_TOP_KS, METRIC_THRESHOLDS_KM)
+    val_g_recall_state = RecallMetricsTracker.init_recall_state(METRIC_TOP_KS, METRIC_THRESHOLDS_KM)
     align_module = alignment_hub.module if hasattr(alignment_hub, "module") else alignment_hub
     
     with torch.no_grad():
-        for val_images, val_gps_coords, val_s2_tokens in val_dataloader:
+        for _, val_images, val_gps_coords, val_s2_tokens in val_dataloader:
             val_images = val_images.to(device, non_blocking=True)
             val_gps_coords = val_gps_coords.to(device, non_blocking=True)
             val_s2_tokens = val_s2_tokens.to(device, non_blocking=True)
@@ -193,12 +190,12 @@ def val_per_epoch(image_encoder, gps_encoder, alignment_hub, val_dataloader, dev
                 val_image_s_vectors.detach(),
                 val_gps_s_vectors.detach(),
             )
-            Retriever.update_recall_state(val_s_recall_state, s_sim, val_gps_coords)
+            RecallMetricsTracker.update_recall_state(val_s_recall_state, s_sim, val_gps_coords)
             g_sim = align_module.geo_aligner.compute_pair_similarity(
                 val_image_g_tokens.detach(),
                 val_gps_g_tokens.detach(),
             )
-            Retriever.update_recall_state(val_g_recall_state, g_sim, val_gps_coords)
+            RecallMetricsTracker.update_recall_state(val_g_recall_state, g_sim, val_gps_coords)
     
     DDP.all_reduce_sum_(val_total_loss)
     DDP.all_reduce_sum_(val_s_loss)
@@ -208,8 +205,8 @@ def val_per_epoch(image_encoder, gps_encoder, alignment_hub, val_dataloader, dev
     avg_val_s_loss = val_s_loss.item() / (len(val_dataloader) * world_size)
     avg_val_g_loss = val_g_loss.item() / (len(val_dataloader) * world_size)
 
-    val_s_metrics = Retriever.finalize_recall_state(val_s_recall_state, device)
-    val_g_metrics = Retriever.finalize_recall_state(val_g_recall_state, device)
+    val_s_metrics = RecallMetricsTracker.finalize_recall_state(val_s_recall_state, device)
+    val_g_metrics = RecallMetricsTracker.finalize_recall_state(val_g_recall_state, device)
 
     return avg_val_loss, avg_val_s_loss, avg_val_g_loss, val_s_metrics, val_g_metrics
 
@@ -221,26 +218,33 @@ def main(args):
     writer = None
     # 2. 加载配置
     cfg = load_config(args.config, overrides=args.overrides)
-    # Build module configs as: class defaults -> YAML -> CLI overrides (already merged in cfg).
-    img_cfg = build_from_defaults(ImageEncoderConfig, getattr(cfg.model, 'image', None))
+    img_cfg = getattr(cfg.model, 'image', None)
+    if img_cfg is None:
+        raise ValueError('Missing model.image configuration')
     img_cfg.img_size = cfg.data.img_size
-    gps_cfg = build_from_defaults(GPSEncoderConfig, getattr(cfg.model, 'gps', None))
-    align_cfg = build_from_defaults(AlignmentHubConfig, getattr(cfg.model, 'alignment', None))
+
+    gps_cfg = getattr(cfg.model, 'gps', None)
+    if gps_cfg is None:
+        raise ValueError('Missing model.gps configuration')
+
+    align_cfg = getattr(cfg.model, 'alignment', None)
+    if align_cfg is None:
+        raise ValueError('Missing model.alignment configuration')
     align_cfg.s_dim = img_cfg.s_dim
     align_cfg.g_dim = img_cfg.g_dim
 
     # Persist the effective runtime config used by training:
     # top-level cfg (already YAML + --set merged) + module defaults resolved via build_from_defaults.
-    resolved_cfg = Config.from_dict(cfg.to_dict())
+    resolved_cfg = Config.from_dict(config_to_dict(cfg))
     if not hasattr(resolved_cfg, 'model') or not isinstance(resolved_cfg.model, Config):
         resolved_cfg.model = Config()
-    resolved_cfg.model.image = Config.from_dict(img_cfg.to_dict())
-    resolved_cfg.model.gps = Config.from_dict(gps_cfg.to_dict())
-    resolved_cfg.model.alignment = Config.from_dict(align_cfg.to_dict())
+    resolved_cfg.model.image = Config.from_dict(config_to_dict(img_cfg))
+    resolved_cfg.model.gps = Config.from_dict(config_to_dict(gps_cfg))
+    resolved_cfg.model.alignment = Config.from_dict(config_to_dict(align_cfg))
 
     logger, writer, out_dir = setup_reporter(
         is_master=is_master,
-        base_output_dir=cfg.output_dir,
+        base_output_dir=cfg.dirs.ckpt_dir,
         cfg=resolved_cfg,
         overrides=args.overrides,
         world_size=world_size,
@@ -453,11 +457,11 @@ def main(args):
         'train_s_loss',
         'train_g_loss',
     ]
-    metrics_fieldnames.extend(rank_metric_fieldnames('train', 's', EVAL_KS, EVAL_THRESHOLDS_KM))
-    metrics_fieldnames.extend(rank_metric_fieldnames('train', 'g', EVAL_KS, EVAL_THRESHOLDS_KM))
+    metrics_fieldnames.extend(rank_metric_fieldnames('train', 's', METRIC_TOP_KS, METRIC_THRESHOLDS_KM))
+    metrics_fieldnames.extend(rank_metric_fieldnames('train', 'g', METRIC_TOP_KS, METRIC_THRESHOLDS_KM))
     metrics_fieldnames.extend(['val_total_loss', 'val_s_loss', 'val_g_loss'])
-    metrics_fieldnames.extend(rank_metric_fieldnames('val', 's', EVAL_KS, EVAL_THRESHOLDS_KM))
-    metrics_fieldnames.extend(rank_metric_fieldnames('val', 'g', EVAL_KS, EVAL_THRESHOLDS_KM))
+    metrics_fieldnames.extend(rank_metric_fieldnames('val', 's', METRIC_TOP_KS, METRIC_THRESHOLDS_KM))
+    metrics_fieldnames.extend(rank_metric_fieldnames('val', 'g', METRIC_TOP_KS, METRIC_THRESHOLDS_KM))
     metrics_fieldnames.append('best_val_s_r1_1km_so_far')
     if is_master:
         metrics_csv_path = os.path.join(out_dir, 'metrics.csv')
@@ -515,8 +519,8 @@ def main(args):
                 val_s_metrics=val_s_metrics,
                 val_g_metrics=val_g_metrics,
                 use_ema=use_ema,
-                eval_thresholds_km=EVAL_THRESHOLDS_KM,
-                eval_ks=EVAL_KS,
+                eval_thresholds_km=METRIC_THRESHOLDS_KM,
+                eval_ks=METRIC_TOP_KS,
                 metrics_csv_path=metrics_csv_path,
                 metrics_fieldnames=metrics_fieldnames,
                 history=history,

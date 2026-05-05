@@ -3,6 +3,10 @@ import torch
 from utils.ddp import Accumulator
 
 
+METRIC_THRESHOLDS_KM = (1, 25, 200, 750, 2500)
+METRIC_TOP_KS = (1, 5, 10, 20, 50, 100)
+
+
 class Evaluator:
     """Distance and hit-rate evaluation utilities shared by retrieval and generation."""
 
@@ -44,10 +48,15 @@ class Evaluator:
         return (min_dists_km.unsqueeze(1) <= thresholds_tensor.unsqueeze(0)).sum(dim=0).to(torch.long)
 
 
-class Retriever:
-    """Top-k retrieval helper for similarity matrices."""
+class RecallMetricsTracker:
+    """Top-k recall/median-error helper for similarity matrices."""
     @staticmethod
-    def init_recall_state(ks, thresholds, distance_backend: str = "haversine"):
+    def init_recall_state(ks=None, thresholds=None, distance_backend: str = "haversine"):
+        if ks is None:
+            ks = METRIC_TOP_KS
+        if thresholds is None:
+            thresholds = METRIC_THRESHOLDS_KM
+
         return {
             "ks": tuple(int(k) for k in ks),
             "thresholds": tuple(float(t) for t in thresholds),
@@ -131,22 +140,5 @@ class Retriever:
         return out
 
 
-class Generator:
-    """Top-k candidate extraction helper for generation outputs."""
-
-    @staticmethod
-    def topk_from_scores(candidate_scores: torch.Tensor, top_k: int):
-        if candidate_scores.dim() != 2:
-            raise ValueError("candidate_scores must be 2D: [batch, num_candidates]")
-        k = min(int(top_k), int(candidate_scores.shape[1]))
-        topk = torch.topk(candidate_scores, k=k, dim=1, largest=True, sorted=True)
-        return topk.values, topk.indices
-
-    @staticmethod
-    def gather_topk_coords(candidate_coords: torch.Tensor, topk_idx: torch.Tensor) -> torch.Tensor:
-        if candidate_coords.dim() != 3:
-            raise ValueError("candidate_coords must be 3D: [batch, num_candidates, 2]")
-        idx = topk_idx.unsqueeze(-1).expand(-1, -1, candidate_coords.shape[-1])
-        return torch.gather(candidate_coords, dim=1, index=idx)
 
 

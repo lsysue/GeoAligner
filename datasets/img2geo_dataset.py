@@ -29,7 +29,8 @@ class Img2GeoDataset(Dataset):
             
         self.img_dir = img_dir
         self.transform = transform
-        
+        self.s2_levels = s2_levels
+
         # --- 内存优化 ---
         # MP16-Pro CSV 包含很多列 ('region', 'country' 等)，训练只需要 ID 和 坐标。
         # 使用 usecols 只读取必要的列，显著减少内存占用。
@@ -54,8 +55,6 @@ class Img2GeoDataset(Dataset):
         if len(self.geo_metadata) < initial_len:
             print(f"警告: 已过滤掉 {initial_len - len(self.geo_metadata)} 条无效坐标的数据。")
 
-        self.s2_levels = s2_levels
-
         # print(f"数据集加载完成，共 {len(self.geo_metadata)} 个样本。")
 
     def __len__(self) -> int:
@@ -79,8 +78,8 @@ class Img2GeoDataset(Dataset):
         
         # 1. 获取图像路径
         # MP16 CSV 中的 IMG_ID 格式如 "92_17_5276763594.jpg"，已包含后缀
-        img_filename = self.geo_metadata.at[idx, 'IMG_ID']
-        img_path = os.path.join(self.img_dir, img_filename)
+        img_id = self.geo_metadata.at[idx, 'IMG_ID']
+        img_path = os.path.join(self.img_dir, img_id)
         
         # 2. 获取 GPS 坐标
         # 顺序严格为 [Latitude, Longitude]
@@ -98,7 +97,7 @@ class Img2GeoDataset(Dataset):
             return self.__getitem__((idx + 1) % len(self))
 
         if self.transform:
-            image = self.transform(image)
+            image_tensor = self.transform(image)
         
         # 4. 转换 GPS 为 Tensor
         # 确保是 float32 类型
@@ -110,19 +109,4 @@ class Img2GeoDataset(Dataset):
 
         s2_tensor = torch.from_numpy(s2_np_int64)
 
-        return image, gps_tensor, s2_tensor
-
-if __name__ == '__main__':
-    # 简单的测试块
-    # 请替换为你的真实路径进行测试
-    TEST_CSV = "/home/lsy/data/MP16-Pro/metadata/MP16_Pro_filtered.csv"
-    TEST_IMG_DIR = "/home/lsy/data/MP16-Pro/images"
-    
-    if os.path.exists(TEST_CSV):
-        ds = Img2GeoDataset(TEST_CSV, TEST_IMG_DIR)
-        img, gps = ds[0]
-        print(f"Test Sample 0:")
-        print(f"Image Shape: {img.size if hasattr(img, 'size') else img.shape}")
-        print(f"GPS: {gps} (Type: {gps.dtype})")
-    else:
-        print("测试路径不存在，跳过测试。")
+        return img_id, image_tensor, gps_tensor, s2_tensor

@@ -3,10 +3,11 @@
 # 1) config class defaults in code
 # 2) values in this yaml
 # 3) CLI --set KEY=VALUE overrides
-
-experiment_name: "geo_aligner_mp16_swin"
-output_dir: "./checkpoints/"
-device: "cuda"
+dirs:
+  root_dir: "/data/lsy/repos/3_GeoAligner"
+  ckpt_dir: "checkpoints"
+  index_dir: "indexes"
+  cache_dir: "analysis/cache"
 
 data:
   batch_size: 256
@@ -38,6 +39,12 @@ model:
   alignment:
     geo_scorer: "hybrid"
     loss_weight_g: 1.2
+
+retrieval:
+  indexer:
+    type: "faiss"
+    nlist: 100
+    use_ivf: true
 
 train:
   epochs: 50

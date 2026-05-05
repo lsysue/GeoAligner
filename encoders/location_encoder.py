@@ -1,12 +1,11 @@
 # location_encoder.py
-# Requires: torch, s2sphere
-# pip install torch s2sphere
-
+import math
+import s2sphere
+from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Optional
+
 import torch
 import torch.nn as nn
-import s2sphere
-import math
 
 # --- 辅助模块：傅里叶特征编码器 ---
 class FourierFeatureEncoder(nn.Module):
@@ -22,72 +21,52 @@ class FourierFeatureEncoder(nn.Module):
         features = torch.cat([torch.sin(projected), torch.cos(projected)], dim=-1)
         return features.flatten(-2)
 
+@dataclass
 class GPSEncoderConfig:
     """
     混合 GPS 编码器配置
     """
-    def __init__(
-        self,
-        # S2 相关配置
-        s2_levels: List[int] = [3, 6, 9, 11, 13] ,
-        s2_embed_dim: int = 128,
-        s2_num_buckets: int = 2**17,
-        s2_embed_dropout: float = 0.1,
-        s2_feature_dropout: float = 0.1,
-        transformer_nhead: int = 4,
-        transformer_nlayers: int = 2,
-        transformer_dropout: float = 0.1,
-        # 傅里叶特征相关配置
-        fourier_n_freqs: int = 10,
-        # continuous_geo_mode supports: latlon_linear | unit_sphere
-        continuous_geo_mode: str = "unit_sphere",
-        n_g_tokens: int = 64,
-        # g_token_neighborhood_scale: float = 0.01,
-        base_scale_multiplier: float = 0.5, # 基础尺度乘数
-        min_scale_deg: float = 1e-4,
-        max_scale_deg: float = 1.0,
-        lon_scale_cos_epsilon: float = 0.15,
-        # sampling_mode_* supports: random | random_seeded | sunflower | grid
-        sampling_mode_train: str = "random",
-        # sampling_mode_eval also supports: same_as_train
-        sampling_mode_eval: Optional[str] = "same_as_train",
-        sampling_seed: int = 42,
-        # 最终输出维度
-        g_dim: int = 256,
-        s_dim: int = 768,
-    ):
-        self.s2_levels = sorted(s2_levels)
-        self.s2_embed_dim = s2_embed_dim
-        self.s2_num_buckets = s2_num_buckets
-        self.s2_embed_dropout = s2_embed_dropout
-        self.s2_feature_dropout = s2_feature_dropout
-        self.transformer_nhead = transformer_nhead
-        self.transformer_nlayers = transformer_nlayers
-        self.transformer_dropout = transformer_dropout
+    # S2 相关配置
+    s2_levels: List[int] = field(default_factory=lambda: [3, 6, 9, 11, 13])
+    s2_embed_dim: int = 128
+    s2_num_buckets: int = 2**17
+    s2_embed_dropout: float = 0.1
+    s2_feature_dropout: float = 0.1
+    transformer_nhead: int = 4
+    transformer_nlayers: int = 2
+    transformer_dropout: float = 0.1
+    # 傅里叶特征相关配置
+    fourier_n_freqs: int = 10
+    # continuous_geo_mode supports: latlon_linear | unit_sphere
+    continuous_geo_mode: str = "unit_sphere"
+    n_g_tokens: int = 64
+    # g_token_neighborhood_scale: float = 0.01,
+    base_scale_multiplier: float = 0.5
+    min_scale_deg: float = 1e-4
+    max_scale_deg: float = 1.0
+    lon_scale_cos_epsilon: float = 0.15
+    # sampling_mode_* supports: random | random_seeded | sunflower | grid
+    sampling_mode_train: str = "random"
+    # sampling_mode_eval also supports: same_as_train
+    sampling_mode_eval: Optional[str] = "same_as_train"
+    sampling_seed: int = 42
+    # 最终输出维度
+    g_dim: int = 256
+    s_dim: int = 768
 
-        self.fourier_n_freqs = fourier_n_freqs
-        self.continuous_geo_mode = continuous_geo_mode
-        self.n_g_tokens = n_g_tokens
-        # self.g_token_neighborhood_scale = g_token_neighborhood_scale
-        self.base_scale_multiplier = base_scale_multiplier
-        self.min_scale_deg = min_scale_deg
-        self.max_scale_deg = max_scale_deg
-        self.lon_scale_cos_epsilon = lon_scale_cos_epsilon
-        self.sampling_mode_train = sampling_mode_train
-        self.sampling_mode_eval = sampling_mode_eval
-        self.sampling_seed = sampling_seed
-        
-        self.g_dim = g_dim
-        self.s_dim = s_dim
+    def __post_init__(self):
+        self.refresh_derived_fields()
 
     def refresh_derived_fields(self):
+        if not all(0 <= level <= 30 for level in self.s2_levels):
+            raise ValueError("S2 levels must be between 0 and 30.")
+        
         self.s2_levels = sorted(self.s2_levels)
         self.num_s2_levels = len(self.s2_levels)
+        
         if self.continuous_geo_mode not in {"latlon_linear", "unit_sphere"}:
-            raise ValueError(
-                f"Unsupported continuous_geo_mode: {self.continuous_geo_mode}. "
-                f"Expected one of ['latlon_linear', 'unit_sphere']"
-            )
+            raise ValueError(f"Unsupported mode: {self.continuous_geo_mode}")
+            
         self.continuous_input_dim = 3 if self.continuous_geo_mode == "unit_sphere" else 2
         self.fourier_dim = self.continuous_input_dim * 2 * self.fourier_n_freqs
         
